@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Jarvis</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#050b14;--fg:#d9f4ff;--cy:#4fd8ff;--am:#ffb347;--dim:#5d7a8c;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:'Rajdhani',system-ui,sans-serif;overflow:hidden}
+body{display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:4vh 5vw;text-align:center}
+#date{font-size:clamp(18px,3vw,32px);font-weight:300;color:var(--dim);letter-spacing:.08em;text-transform:capitalize}
+#time{font-size:clamp(90px,24vw,300px);font-weight:300;line-height:1;color:var(--fg);font-variant-numeric:tabular-nums}
+#time span{color:var(--cy)}
+#meteo{font-size:clamp(20px,3.4vw,38px);font-weight:500;color:var(--am);min-height:1.3em}
+#answer{min-height:4.5em;max-width:44ch;font-size:clamp(18px,2.6vw,30px);font-weight:500}
+#heard{color:var(--dim);font-size:clamp(14px,2vw,20px);min-height:1.4em}
+#orb{width:clamp(84px,14vw,130px);aspect-ratio:1;border-radius:50%;border:2px solid var(--cy);background:radial-gradient(circle at 50% 40%,rgba(79,216,255,.35),rgba(79,216,255,.05) 70%);color:var(--cy);font:500 18px 'Rajdhani',system-ui,sans-serif;cursor:pointer;transition:box-shadow .25s,border-color .25s,opacity .25s}
+#orb:focus-visible,#key:focus-visible{outline:3px solid var(--am);outline-offset:4px}
+#orb.idle{opacity:.55}
+#orb.listen{border-color:var(--am);color:var(--am);box-shadow:0 0 0 12px rgba(255,179,71,.14),0 0 40px rgba(255,179,71,.4)}
+#orb.think{box-shadow:0 0 0 12px rgba(79,216,255,.14),0 0 40px rgba(79,216,255,.4)}
+#key{background:none;border:none;color:var(--dim);font:300 14px 'Rajdhani',system-ui,sans-serif;cursor:pointer;text-decoration:underline;margin-top:8px}
+@media (prefers-reduced-motion:reduce){#orb{transition:none}}
+</style>
+</head>
+<body>
+<div>
+  <div id="date"></div>
+  <div id="time"></div>
+  <div id="meteo"></div>
+</div>
+<div>
+  <div id="answer">Appuie une seule fois sur « Activer », puis dis « Claude ».</div>
+  <div id="heard"></div>
+</div>
+<div>
+  <button id="orb" aria-label="Activer Jarvis">Activer</button><br>
+  <button id="key">Clé API</button>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const LAT=-20.88, LON=55.45; // Saint-Denis, La Réunion (change si besoin)
+const MODEL='claude-haiku-5-5';
+let meteoTxt='';
+
+function tick(){
+  const d=new Date();
+  $('date').textContent=d.toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
+  $('time').innerHTML=String(d.getHours()).padStart(2,'0')+'<span>:</span>'+String(d.getMinutes()).padStart(2,'0');
+}
+tick();setInterval(tick,1000);
+
+const WC={0:'ciel dégagé',1:'plutôt dégagé',2:'partiellement nuageux',3:'couvert',45:'brouillard',48:'brouillard',51:'bruine',53:'bruine',55:'bruine',61:'pluie faible',63:'pluie',65:'forte pluie',80:'averses',81:'averses',82:'fortes averses',95:'orage',96:'orage',99:'orage'};
+async function meteo(){
+  try{
+    const r=await fetch('https://api.open-meteo.com/v1/forecast?latitude='+LAT+'&longitude='+LON+'&current=temperature_2m,weather_code&timezone=auto');
+    const j=await r.json();
+    const t=Math.round(j.current.temperature_2m),c=WC[j.current.weather_code]||'météo variable';
+    meteoTxt=t+' degrés, '+c;
+    $('meteo').textContent=t+'° · '+c;
+  }catch(e){}
+}
+meteo();setInterval(meteo,900000);
+
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const orb=$('orb');
+let history=[],busy=false,running=false,rec=null,awaiting=false;
+const getKey=()=>{try{return localStorage.getItem('jarvis_key')||''}catch(e){return ''}};
+$('key').addEventListener('click',()=>{
+  const k=prompt('Colle ta clé API Anthropic (elle reste sur cet iPad) :');
+  if(k!==null){try{localStorage.setItem('jarvis_key',k.trim())}catch(e){}}
+});
+
+function setOrb(cls,txt){orb.className=cls;orb.textContent=txt;}
+function standby(){busy=false;awaiting=false;setOrb('idle','Claude ?');}
+
+function say(t){
+  $('answer').textContent=t;
+  let done=false;
+  const end=()=>{if(!done){done=true;setTimeout(standby,400);}};
+  try{
+    speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(t);
+    u.lang='fr-FR';
+    const v=speechSynthesis.getVoices().find(v=>v.lang&&v.lang.startsWith('fr'));
+    if(v)u.voice=v;
+    u.onend=end;u.onerror=end;
+    speechSynthesis.speak(u);
+    setTimeout(end,20000);
+  }catch(e){end();}
+}
+
+async function ask(q){
+  busy=true;awaiting=false;
+  setOrb('think','…');
+  const low=q.toLowerCase();
+  const d=new Date();
+  if(/quelle heure|l.heure/.test(low)){return say('Il est '+d.getHours()+' heures '+(d.getMinutes()||'pile')+'.');}
+  if(/m[ée]t[ée]o|quel temps|il fait/.test(low)&&meteoTxt){return say('Il fait '+meteoTxt+'.');}
+  const key=getKey();
+  if(!key){return say('Pour que je réponde à tout, ajoute ta clé API avec le bouton en bas. Je sais déjà donner l’heure et la météo.');}
+  const msgs=history.concat([{role:'user',content:q}]);
+  try{
+    const r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:MODEL,max_tokens:300,
+        system:'Tu es Jarvis, un assistant vocal. Réponds en français, en 1 à 3 phrases courtes, sans markdown. Il est '+d.toLocaleString('fr-FR')+'. Météo actuelle : '+meteoTxt+'.',
+        messages:msgs})
+    });
+    const j=await r.json();
+    if(!r.ok)throw new Error(j.error&&j.error.message||'erreur');
+    const text=j.content.map(b=>b.text||'').join('').trim();
+    history=msgs.concat([{role:'assistant',content:text}]).slice(-8);
+    say(text);
+  }catch(e){
+    say('Je n’ai pas pu répondre. Vérifie ta clé API.');
+  }
+}
+
+function handle(text){
+  if(busy)return;
+  const low=text.toLowerCase();
+  $('heard').textContent='« '+text.trim()+' »';
+  if(awaiting){ask(text.trim());return;}
+  const m=low.match(/cl[aoe]+d+e?s?\b/);
+  if(!m)return;
+  const after=text.slice(low.indexOf(m[0])+m[0].length).replace(/^[\s,.!?]+/,'');
+  if(after.length>2){ask(after);}
+  else{awaiting=true;setOrb('listen','Je t’écoute');$('answer').textContent='Je t’écoute…';}
+}
+
+function startRec(){
+  if(!running)return;
+  rec=new SR();
+  rec.lang='fr-FR';rec.continuous=true;rec.interimResults=false;
+  rec.onresult=e=>{
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      if(e.results[i].isFinal)handle(e.results[i][0].transcript);
+    }
+  };
+  rec.onerror=e=>{
+    if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+      running=false;$('answer').textContent='Écoute refusée ('+e.error+'). Vérifie la dictée et Siri dans les réglages.';setOrb('','Activer');
+    }else if(e.error!=='no-speech'&&e.error!=='aborted'){
+      $('heard').textContent='Erreur : '+e.error;
+    }
+  };
+  rec.onend=()=>{if(running)setTimeout(startRec,300);};
+  try{rec.start();}catch(e){}
+}
+
+orb.addEventListener('click',()=>{
+  if(!SR){$('answer').textContent='Ce navigateur ne gère pas la reconnaissance vocale.';return;}
+  if(running){
+    running=false;try{rec.stop();}catch(e){}
+    setOrb('','Activer');$('answer').textContent='Jarvis est en pause.';return;
+  }
+  running=true;
+  $('answer').textContent='Autorise le micro si Safari le demande…';
+  if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){
+    navigator.mediaDevices.getUserMedia({audio:true}).then(st=>{
+      st.getTracks().forEach(t=>t.stop());
+      $('answer').textContent='Dis « Claude » suivi de ta question.';
+      standby();startRec();
+    }).catch(err=>{
+      running=false;setOrb('','Activer');
+      $('answer').textContent='Micro bloqué par Safari ('+err.name+'). Réglages du site : aA, Réglages du site web, Microphone, Autoriser.';
+    });
+  }else{
+    $('answer').textContent='Dis « Claude » suivi de ta question.';
+    standby();startRec();
+  }
+});
+</script>
+</body>
+</html>
